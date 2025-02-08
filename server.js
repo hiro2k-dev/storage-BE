@@ -1,4 +1,5 @@
 require("dotenv").config();
+require("./db")();
 const express = require("express");
 const multer = require("multer");
 const fs = require("fs-extra");
@@ -68,26 +69,33 @@ app.post("/merge", async (req, res) => {
   }
 });
 
-// ?? List Files & Folders Recursively
+// List Files & Folders Recursively (Now Includes File Size)
 app.get("/files", async (req, res) => {
   try {
     const getAllFiles = (dir, filesList = []) => {
       const files = fs.readdirSync(dir);
       files.forEach((file) => {
         const filePath = path.join(dir, file);
-        if (fs.statSync(filePath).isDirectory()) {
+        const stats = fs.statSync(filePath);
+        
+        if (stats.isDirectory()) {
           getAllFiles(filePath, filesList);
         } else {
-          filesList.push(path.relative(UPLOAD_DIR, filePath));
+          filesList.push({
+            filename: path.relative(UPLOAD_DIR, filePath),
+            size: stats.size, // File size in bytes
+          });
         }
       });
       return filesList;
     };
+
     res.json(getAllFiles(UPLOAD_DIR));
   } catch (err) {
-    res.status(500).json({ error: "? List error" });
+    res.status(500).json({ error: "❌ Error retrieving files" });
   }
 });
+
 
 // ?? Fast File Download (Streaming)
 app.get("/download/:filename(*)", (req, res) => {
@@ -123,4 +131,4 @@ app.delete("/delete/:filename(*)", async (req, res) => {
 });
 
 // ?? Start Server
-app.listen(port, () => console.log(`?? Server running on port ${port}`));
+app.listen(port, () => console.log(`Server running on port ${port}`));
