@@ -19,6 +19,10 @@ app.use(express.json());
 app.get("/status", (req, res) => {
   res.json({ message: "? Server is running!", timestamp: new Date().toISOString() });
 });
+// ? Health Check
+app.get("/", (req, res) => {
+  res.json({ message: "Hiro Storage BE"});
+});
 
 // ?? Upload Chunks (Handles Large Files & Folder Structure)
 const storage = multer.memoryStorage();
