@@ -1,134 +1,131 @@
 require("dotenv").config();
 require("./db")();
 const express = require("express");
+const mongoose = require("mongoose");
 const multer = require("multer");
 const fs = require("fs-extra");
 const path = require("path");
 const cors = require("cors");
 
+const User = require("./models/User");
+const Folder = require("./models/Folder");
+const File = require("./models/File");
+
 const app = express();
 const port = process.env.PORT || 10040;
 const UPLOAD_DIR = path.join(__dirname, "uploads");
 
-// Ensure upload directory exists
+
+// ✅ Health Check
+app.get("/status", (req, res) => {
+  res.json({ message: "✅ Server is running!", timestamp: new Date().toISOString() });
+});
+
+// ✅ Create Upload Directory
 fs.ensureDirSync(UPLOAD_DIR);
 
-app.use(cors());
-// app.use(express.json());
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
-
-
-// ? Health Check
-app.get("/status", (req, res) => {
-  res.json({ message: "? Server is running!", timestamp: new Date().toISOString() });
-});
-// ? Health Check
-app.get("/", (req, res) => {
-  res.json({ message: "Hiro Storage BE"});
-});
-
-// ?? Upload Chunks (Handles Large Files & Folder Structure)
+// 📤 Upload File
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
 app.post("/upload", upload.single("chunk"), async (req, res) => {
   try {
-    const { filename, chunkIndex, totalChunks } = req.body;
+    const { filename, chunkIndex, totalChunks, folderId } = req.body;
     const filePath = path.join(UPLOAD_DIR, filename);
 
-    // Ensure the directory exists for nested files
     fs.ensureDirSync(path.dirname(filePath));
-
     await fs.writeFile(filePath + `.part${chunkIndex}`, req.file.buffer);
-    res.json({ message: `? Chunk ${chunkIndex}/${totalChunks} uploaded` });
-  } catch (err) {
-    res.status(500).json({ error: "? Upload error" });
-  }
-});
 
-// ?? Merge Chunks (Ensures Folder Structure)
-app.post("/merge", async (req, res) => {
-  const { filename, totalChunks } = req.body;
-  const finalPath = path.join(UPLOAD_DIR, filename);
-
-  try {
-    const fileStream = fs.createWriteStream(finalPath);
-    for (let i = 0; i < totalChunks; i++) {
-      const chunkPath = finalPath + `.part${i}`;
-      if (!fs.existsSync(chunkPath)) {
-        return res.status(400).json({ error: `Missing chunk ${i}` });
-      }
-      fileStream.write(fs.readFileSync(chunkPath));
-      fs.unlinkSync(chunkPath);
+    if (parseInt(chunkIndex) === totalChunks - 1) {
+      // Store metadata in DB only after final chunk is uploaded
+      await File.create({
+        filename,
+        size: req.file.size,
+        path: filePath,
+        folder: folderId || null,
+        owner: null, // Assign an owner if needed
+        mimeType: getMimeType(filename),
+      });
     }
-    fileStream.end();
-    res.json({ message: "? File merge complete" });
+
+    res.json({ message: `✅ Chunk ${chunkIndex}/${totalChunks} uploaded` });
   } catch (err) {
-    res.status(500).json({ error: "? Merge error" });
+    res.status(500).json({ error: "❌ Upload error" });
   }
 });
 
-// List Files & Folders Recursively (Now Includes File Size)
+// 📂 Create Folder
+app.post("/folder", async (req, res) => {
+  try {
+    const { name, parentFolderId } = req.body;
+    const parentFolder = await Folder.findById(parentFolderId).lean();
+    const folderPath = parentFolder ? path.join(parentFolder.path, name) : path.join(UPLOAD_DIR, name);
+
+    fs.ensureDirSync(folderPath);
+    const folder = await Folder.create({ name, path: folderPath, parentFolder: parentFolderId || null, owner: null });
+
+    res.json(folder);
+  } catch (err) {
+    res.status(500).json({ error: "❌ Error creating folder" });
+  }
+});
+
+// 📄 List Files & Folders
 app.get("/files", async (req, res) => {
   try {
-    const getAllFiles = (dir, filesList = []) => {
-      const files = fs.readdirSync(dir);
-      files.forEach((file) => {
-        const filePath = path.join(dir, file);
-        const stats = fs.statSync(filePath);
-        
-        if (stats.isDirectory()) {
-          getAllFiles(filePath, filesList);
-        } else {
-          filesList.push({
-            filename: path.relative(UPLOAD_DIR, filePath),
-            size: stats.size, // File size in bytes
-          });
-        }
-      });
-      return filesList;
-    };
-
-    res.json(getAllFiles(UPLOAD_DIR));
+    const files = await File.find();
+    const folders = await Folder.find();
+    res.json({ files, folders });
   } catch (err) {
     res.status(500).json({ error: "❌ Error retrieving files" });
   }
 });
 
-
-// ?? Fast File Download (Streaming)
-app.get("/download/:filename(*)", (req, res) => {
+// 📥 Download File
+app.get("/download/:filename", async (req, res) => {
   const filePath = path.join(UPLOAD_DIR, req.params.filename);
-  if (!fs.existsSync(filePath)) {
+  const fileRecord = await File.findOne({ path: filePath });
+
+  if (!fileRecord || !fs.existsSync(filePath)) {
     return res.status(404).json({ error: "File not found" });
   }
 
-  res.setHeader("Content-Disposition", `attachment; filename="${path.basename(req.params.filename)}"`);
+  res.setHeader("Content-Disposition", `attachment; filename="${req.params.filename}"`);
   res.setHeader("Content-Type", "application/octet-stream");
 
   const fileStream = fs.createReadStream(filePath);
   fileStream.pipe(res);
 });
 
-// ??? Delete File or Folder
-app.delete("/delete/:filename(*)", async (req, res) => {
+// 🗑️ Delete File or Folder
+app.delete("/delete/:filename", async (req, res) => {
   const filePath = path.join(UPLOAD_DIR, req.params.filename);
-  try {
-    if (fs.existsSync(filePath)) {
-      if (fs.lstatSync(filePath).isDirectory()) {
-        fs.removeSync(filePath);
-      } else {
-        fs.unlinkSync(filePath);
-      }
-      res.json({ message: `? Deleted: ${req.params.filename}` });
-    } else {
-      res.status(404).json({ error: "File/Folder not found" });
-    }
-  } catch (err) {
-    res.status(500).json({ error: "? Delete error" });
+  const fileRecord = await File.findOneAndDelete({ path: filePath });
+
+  if (!fileRecord || !fs.existsSync(filePath)) {
+    return res.status(404).json({ error: "File not found" });
   }
+
+  fs.unlinkSync(filePath);
+  res.json({ message: `✅ Deleted: ${req.params.filename}` });
 });
 
-// ?? Start Server
-app.listen(port, () => console.log(`Server running on port ${port}`));
+// 🚀 Start Server
+app.listen(port, () => console.log(`✅ Server running on port ${port}`));
+
+// 📄 Helper Function: Get MIME Type
+const getMimeType = (filename) => {
+  const ext = path.extname(filename).toLowerCase();
+  const mimeTypes = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".mp4": "video/mp4",
+    ".mp3": "audio/mpeg",
+    ".pdf": "application/pdf",
+    ".txt": "text/plain",
+    ".zip": "application/zip",
+  };
+  return mimeTypes[ext] || "application/octet-stream";
+};

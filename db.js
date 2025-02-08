@@ -1,8 +1,9 @@
 const mongoose = require('mongoose');
-
+require('dotenv').config();
+const MONGODB_URI = process.env.MONGODB_URI;
 const connectDB = async () => {
     try {
-        await mongoose.connect('mongodb://localhost:27017/yourDatabaseName', {
+        await mongoose.connect(MONGODB_URI || 'mongodb://localhost:27017/file_manager', {
             useNewUrlParser: true,
             // useUnifiedTopology: true,
             // useCreateIndex: true,
