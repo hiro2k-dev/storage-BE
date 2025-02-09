@@ -3,7 +3,7 @@ require('dotenv').config();
 const MONGODB_URI = process.env.MONGODB_URI;
 const connectDB = async () => {
     try {
-        await mongoose.connect(MONGODB_URI || 'mongodb://localhost:27017/file_manager', {
+        await mongoose.connect(MONGODB_URI || 'mongodb://127.0.0.1:27017/file_manager', {
             useNewUrlParser: true,
             // useUnifiedTopology: true,
             // useCreateIndex: true,

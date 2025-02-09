@@ -40,3 +40,4 @@ Thumbs.db
 pm2.log
 pm2.pid
 uploads/
+firebase-service-account.json

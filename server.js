@@ -1,5 +1,9 @@
 require("dotenv").config();
 require("./db")();
+const jwt = require("jsonwebtoken");
+const admin = require("./firebase");
+const cookieParser = require("cookie-parser");
+
 const express = require("express");
 const mongoose = require("mongoose");
 const multer = require("multer");
@@ -14,11 +18,24 @@ const File = require("./models/File");
 const app = express();
 const port = process.env.PORT || 10040;
 const UPLOAD_DIR = path.join(__dirname, "uploads");
+// ✅ Use `cookie-parser`
+app.use(cookieParser());
 
-
+// ✅ Configure CORS to allow credentials
+app.use(
+  cors({
+    origin: process.env.FRONTEND_URL || "http://localhost:3000",
+    credentials: true, // 🔥 Allow cookies from frontend
+  })
+);
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ limit: "50mb", extended: true }));
 // ✅ Health Check
 app.get("/status", (req, res) => {
-  res.json({ message: "✅ Server is running!", timestamp: new Date().toISOString() });
+  res.json({
+    message: "✅ Server is running!",
+    timestamp: new Date().toISOString(),
+  });
 });
 
 // ✅ Create Upload Directory
@@ -50,8 +67,70 @@ app.post("/upload", upload.single("chunk"), async (req, res) => {
 
     res.json({ message: `✅ Chunk ${chunkIndex}/${totalChunks} uploaded` });
   } catch (err) {
+    console.error(err.message);
     res.status(500).json({ error: "❌ Upload error" });
   }
+});
+app.post("/auth/google", async (req, res) => {
+  try {
+    const { name, email, googleId, avatar, token } = req.body;
+    console.log(token);
+    const decodedToken = await admin.auth().verifyIdToken(token);
+    console.log(decodedToken, "decodedToken");
+    if (decodedToken.uid !== googleId) {
+      return res.status(401).json({ error: "Invalid Google ID Token" });
+    }
+
+    let user = await User.findOne({ email });
+    console.log(user, "login");
+    if (!user) {
+      user = await User.create({ name, email, googleId, avatar });
+    }
+
+    const jwtToken = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, {
+      expiresIn: "7d",
+    });
+
+    res.cookie("auth_token", jwtToken, {
+      httpOnly: true, // 🔐 Secure from JavaScript access
+      secure: process.env.NODE_ENV === "production", // 🔒 Set `true` in production (for HTTPS)
+      sameSite: "Lax",
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    });
+
+    res.json({ message: "✅ Login successful", user });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ error: "Authentication failed" });
+  }
+});
+
+app.get("/auth/me", async (req, res) => {
+  try {
+    const token = req.cookies.auth_token; // ✅ Get token from cookies
+    if (!token) {
+      return res.status(401).json({ error: "❌ No authentication token" });
+    }
+
+    // ✅ Decode JWT Token
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    // ✅ Find user in MongoDB
+    const user = await User.findById(decoded.userId).select("-password"); // Exclude password field
+    if (!user) {
+      return res.status(401).json({ error: "❌ User not found" });
+    }
+
+    res.json({ user }); // ✅ Return full user details
+  } catch (err) {
+    console.error("❌ Authentication Error:", err.message);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+app.post("/auth/logout", (req, res) => {
+  res.clearCookie("auth_token");
+  res.json({ message: "✅ Logged out" });
 });
 
 // 📂 Create Folder
@@ -59,10 +138,17 @@ app.post("/folder", async (req, res) => {
   try {
     const { name, parentFolderId } = req.body;
     const parentFolder = await Folder.findById(parentFolderId).lean();
-    const folderPath = parentFolder ? path.join(parentFolder.path, name) : path.join(UPLOAD_DIR, name);
+    const folderPath = parentFolder
+      ? path.join(parentFolder.path, name)
+      : path.join(UPLOAD_DIR, name);
 
     fs.ensureDirSync(folderPath);
-    const folder = await Folder.create({ name, path: folderPath, parentFolder: parentFolderId || null, owner: null });
+    const folder = await Folder.create({
+      name,
+      path: folderPath,
+      parentFolder: parentFolderId || null,
+      owner: null,
+    });
 
     res.json(folder);
   } catch (err) {
@@ -90,7 +176,10 @@ app.get("/download/:filename", async (req, res) => {
     return res.status(404).json({ error: "File not found" });
   }
 
-  res.setHeader("Content-Disposition", `attachment; filename="${req.params.filename}"`);
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="${req.params.filename}"`
+  );
   res.setHeader("Content-Type", "application/octet-stream");
 
   const fileStream = fs.createReadStream(filePath);
