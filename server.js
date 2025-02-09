@@ -6,6 +6,7 @@ const cookieParser = require("cookie-parser");
 
 const express = require("express");
 const mongoose = require("mongoose");
+const mime = require("mime-types");
 const multer = require("multer");
 const fs = require("fs-extra");
 const path = require("path");
@@ -69,6 +70,55 @@ app.post("/upload", upload.single("chunk"), async (req, res) => {
   } catch (err) {
     console.error(err.message);
     res.status(500).json({ error: "❌ Upload error" });
+  }
+});
+
+app.post("/merge", async (req, res) => {
+  try {
+    const { filename, totalChunks, owner, folder, isPublic } = req.body;
+    const finalPath = path.join(UPLOAD_DIR, filename);
+
+    // ✅ Merge file chunks
+    const fileStream = fs.createWriteStream(finalPath);
+    for (let i = 0; i < totalChunks; i++) {
+      const chunkPath = `${finalPath}.part${i}`;
+
+      if (!fs.existsSync(chunkPath)) {
+        return res.status(400).json({ error: `❌ Missing chunk ${i}` });
+      }
+
+      const chunkStream = fs.createReadStream(chunkPath);
+      await new Promise((resolve, reject) => {
+        chunkStream.pipe(fileStream, { end: false });
+        chunkStream.on("end", () => {
+          fs.unlinkSync(chunkPath); // ✅ Delete chunk after merging
+          resolve();
+        });
+        chunkStream.on("error", reject);
+      });
+    }
+    fileStream.end(); // ✅ Finalize file writing
+
+    // ✅ Get final file size and MIME type
+    const fileSize = fs.statSync(finalPath).size;
+    const mimeType = mime.lookup(finalPath) || "application/octet-stream";
+
+    // ✅ Save file info to MongoDB
+    const file = await File.create({
+      filename,
+      size: fileSize,
+      owner, // 🔥 Associate with user
+      folder: folder || null, // 🔥 Associate with a folder
+      path: `/uploads/${filename}`, // 🔥 Adjust based on frontend
+      mimeType,
+      isPublic: isPublic || false, // 🔥 Default to private
+    });
+
+    res.json({ message: "✅ File merge complete", file });
+
+  } catch (err) {
+    console.error("❌ Merge Error:", err);
+    res.status(500).json({ error: "❌ Merge error" });
   }
 });
 app.post("/auth/google", async (req, res) => {
